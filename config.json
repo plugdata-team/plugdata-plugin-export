@@ -3,6 +3,7 @@
     "name": "N-TILT",
     "author": "Nasko",
     "path": "Plugins/N-TILT.zip",
+    "patch": "N-TILT.pd",
     "formats": ["VST3", "AU", "LV2", "CLAP", "Standalone"],
     "type": "fx",
     "version": "1.0.0",

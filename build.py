@@ -5,6 +5,8 @@ import platform
 import os
 import shutil
 import argparse
+import re
+import sys
 
 parser = argparse.ArgumentParser(description="Build plugins with CMake")
 parser.add_argument(
@@ -26,6 +28,113 @@ parser.add_argument(
 
 args = parser.parse_args()
 
+# ── Sanity-check helpers ────────────────────────────────────────────────────
+
+KNOWN_FORMATS = {"VST3", "AU", "LV2", "CLAP", "Standalone"}
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+errors = []   # fatal problems  – abort after collecting all of them
+warnings = [] # non-fatal oddities
+
+def error(msg: str):
+    errors.append(f"  ERROR: {msg}")
+
+def warn(msg: str):
+    warnings.append(f"  WARNING: {msg}")
+
+def validate_config(path: str) -> list:
+    """Load and validate config.json. Returns the parsed list or exits."""
+    if not os.path.isfile(path):
+        print(f"FATAL: config.json not found at '{os.path.abspath(path)}'")
+        sys.exit(1)
+
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"FATAL: config.json is not valid JSON – {e}")
+        sys.exit(1)
+
+    if not isinstance(data, list):
+        print("FATAL: config.json must contain a JSON array of plugin objects.")
+        sys.exit(1)
+
+    if len(data) == 0:
+        warn("config.json contains no plugins – nothing to build.")
+
+    return data
+
+def validate_plugin(plugin: dict, index: int):
+    prefix = f"Plugin[{index}]"
+
+    # ── Required fields ──────────────────────────────────────────────────────
+    name = plugin.get("name")
+    if not name:
+        error(f"{prefix}: missing required field 'name'.")
+    elif not isinstance(name, str) or not name.strip():
+        error(f"{prefix}: 'name' must be a non-empty string (got {name!r}).")
+
+    path = plugin.get("path")
+    if not path:
+        error(f"{prefix} ({name!r}): missing required field 'path'.")
+    else:
+        resolved = Path(path).resolve()
+        if not resolved.exists():
+            error(f"{prefix} ({name!r}): plugin path does not exist: '{resolved}'")
+        elif not resolved.is_file():
+            error(f"{prefix} ({name!r}): plugin path exists but is not a file: '{resolved}'")
+
+    # ── Optional but validated fields ────────────────────────────────────────
+    formats = plugin.get("formats", [])
+    if not isinstance(formats, list):
+        error(f"{prefix} ({name!r}): 'formats' must be a list, got {type(formats).__name__}.")
+    else:
+        if len(formats) == 0:
+            warn(f"{prefix} ({name!r}): 'formats' is empty – no build targets will be produced.")
+        for fmt in formats:
+            if fmt not in KNOWN_FORMATS:
+                warn(f"{prefix} ({name!r}): unknown format '{fmt}'. "
+                     f"Known formats are: {', '.join(sorted(KNOWN_FORMATS))}.")
+
+    plugin_type = plugin.get("type", "")
+    if plugin_type and plugin_type.lower() not in ("fx", "instrument", ""):
+        warn(f"{prefix} ({name!r}): unexpected 'type' value '{plugin_type}'. "
+             f"Expected 'fx' or 'instrument'.")
+
+    version = plugin.get("version", "1.0.0")
+    if not VERSION_RE.match(str(version)):
+        warn(f"{prefix} ({name!r}): 'version' value '{version}' does not follow "
+             f"MAJOR.MINOR.PATCH format.")
+
+    for bool_field in ("enable_gem", "enable_sfizz", "enable_ffmpeg"):
+        val = plugin.get(bool_field)
+        if val is not None and not isinstance(val, bool):
+            warn(f"{prefix} ({name!r}): '{bool_field}' should be a boolean, got {val!r}.")
+
+# ── Run validation ───────────────────────────────────────────────────────────
+
+plugins_config = validate_config("config.json")
+
+for i, plugin in enumerate(plugins_config):
+    if not isinstance(plugin, dict):
+        error(f"Plugin[{i}]: expected an object, got {type(plugin).__name__}.")
+        continue
+    validate_plugin(plugin, i)
+
+if warnings:
+    print("Build warnings:")
+    for w in warnings:
+        print(w)
+    print()
+
+if errors:
+    print("Build errors – cannot continue:")
+    for e in errors:
+        print(e)
+    sys.exit(1)
+
+# ── Continue with the rest of the build ─────────────────────────────────────
+
 system = platform.system()
 if system == "Windows":
     cmake_compiler = ["-DCMAKE_C_COMPILER=cl", "-DCMAKE_CXX_COMPILER=cl"]
@@ -40,24 +149,23 @@ elif args.generator == "visualstudio":
 else:
     cmake_generator = ["-GNinja"]
 
-# Load config.json
-with open("config.json") as f:
-    plugins_config = json.load(f)
-
 plugdata_dir = Path("plugdata").resolve()
-builds_parent_dir = plugdata_dir.parent  # Build folders go here
+builds_parent_dir = plugdata_dir.parent
 
 plugins_dir = os.path.join("plugdata", "Plugins")
 build_output_dir = os.path.join("Build")
 os.makedirs(build_output_dir, exist_ok=True)
 
 if not plugdata_dir.is_dir():
-    print(f"plugdata directory not found: {plugdata_dir}")
-    exit(1)
+    print(f"FATAL: plugdata directory not found at '{plugdata_dir}'. "
+          f"Make sure you're running this script from the repo root and that "
+          f"the plugdata submodule has been initialised (git submodule update --init).")
+    sys.exit(1)
 
 for plugin in plugins_config:
     name = plugin["name"]
     zip_path = Path(plugin["path"]).resolve()
+    patch = plugin["patch"]
     formats = plugin.get("formats", [])
     is_fx = plugin.get("type", "").lower() == "fx"
 
@@ -77,6 +185,7 @@ for plugin in plugins_config:
         *cmake_compiler,
         f"-B{build_dir}",
         f"-DCUSTOM_PLUGIN_NAME={name}",
+        f"-DCUSTOM_PLUGIN_PATCH={patch}",
         f"-DCUSTOM_PLUGIN_PATH={zip_path}",
         f"-DCUSTOM_PLUGIN_COMPANY={author}",
         f"-DCUSTOM_PLUGIN_VERSION={version}",
@@ -96,7 +205,6 @@ for plugin in plugins_config:
         print(f"Failed cmake configure for {name}")
         continue
 
-    # Build all combinations of type + format
     if not args.configure_only:
         for fmt in formats:
             if system != "Darwin" and fmt == "AU":
@@ -136,10 +244,10 @@ for plugin in plugins_config:
                 elif fmt == "CLAP":
                     extension = ".clap"
 
-                plugin_filename = name + extension;
+                plugin_filename = name + extension
                 os.makedirs(target_dir, exist_ok=True)
-                src = os.path.join(format_path, plugin_filename);
-                dst = os.path.join(target_dir, plugin_filename);
+                src = os.path.join(format_path, plugin_filename)
+                dst = os.path.join(target_dir, plugin_filename)
                 if os.path.isdir(src):
                     if os.path.exists(dst):
                         shutil.rmtree(dst)

@@ -18,6 +18,7 @@ Example:
     "name": "N-SPEC COMP LITE 2",
     "author": "Nasko",
     "path": "Plugins/N-SPEC COMP LITE 2.zip",
+    "patch": "N-SPEC COMP LITE 2.pd",
     "formats": ["VST3", "AU", "LV2", "CLAP"],
     "type": "fx",
     "version": "1.0.0",
@@ -29,6 +30,7 @@ Example:
     "name": "N-TILT",
     "author": "Nasko",
     "path": "Plugins/N-TILT.zip",
+    "patch": "N-TILT.pd",
     "formats": ["Standalone"],
     "type": "fx",
     "version": "1.0.0",
@@ -48,6 +50,7 @@ Example:
 | `name`    | `string` | **Unique name** of the plugin. This is how it will appear in your DAW. <br>_Note: You cannot load two plugdata plugins with the same name._ |
 | `author`  | `string` | Name of the plugin's creator, displayed inside the DAW. |
 | `path`    | `string` | Path to the patch location within the repository. Can be a **folder** or a **.zip** file. |
+| `patch`   | `string` | File name of the patch within the zip file or folder, must be a **.pd** file |
 | `formats` | `array`  | List of plugin formats to build. Valid values: `VST3`, `AU`, `CLAP`, `LV2`, `Standalone`. |
 | `type`    | `string` | Type of plugin: either `"fx"` for effects or `"instrument"` for instruments/synths. |
 ---
